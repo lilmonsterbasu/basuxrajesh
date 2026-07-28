@@ -126,13 +126,33 @@ class Classifier(Protocol):
     ) -> list[ClassificationResult]: ...
 ```
 
-To add a new provider:
+Four providers ship today:
 
-1. Subclass `BaseClassifier` in `classifier.py` (see `OpenAIClassifier`,
-   `GeminiClassifier`, `OllamaClassifier` stubs for the pattern).
-2. Implement `__init__` (read API key/config) and `classify()` (build
-   the prompt via `prompts.build_classification_prompt`, call the
-   provider's API, parse the JSON response into a `ClassificationResult`).
+| `provider=` | Backend | Needs |
+|-------------|---------|-------|
+| `claude` (default) | Anthropic Messages API | `ANTHROPIC_API_KEY` |
+| `openai` | OpenAI chat completions | `OPENAI_API_KEY`, `pip install openai` |
+| `gemini` | Google Gemini | `GEMINI_API_KEY`, `pip install google-genai` |
+| `ollama` | Local Ollama server | `ollama serve` — no key, no cost |
+
+Provider SDKs are imported lazily, so you only install the ones you use.
+
+To add a fifth:
+
+1. Subclass `BaseClassifier` in `classifier.py` (see `OpenAIClassifier` for
+   the pattern).
+2. Implement `__init__` (read API key/config) and `_classify_song(song)`,
+   which builds the prompt via `prompts.build_classification_prompt` and
+   returns the raw fields dict from the model. If the provider can handle
+   several songs per request, also set `batch_size` and implement
+   `_classify_songs(songs) -> {index: fields}`.
 3. Register it in `get_classifier()`'s provider-name dispatch.
 4. Nothing else in the codebase needs to change — `app.py`, `ui.py`, and
    `webapp/server.py` all go through `get_classifier(provider=...)`.
+
+`BaseClassifier` supplies the rest for free: the `(title, artist)` cache,
+chunking, progress callbacks, per-song error isolation, markdown-fence
+stripping, and validation of energy bounds and the context vocabulary. That
+last part matters most for providers without schema enforcement — Gemini and
+Ollama return free-form JSON, and `_normalize()` is what stops an invented
+context tag from becoming a stray Apple Music playlist.

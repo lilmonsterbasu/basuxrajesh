@@ -10,6 +10,7 @@ config without touching calling code.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -119,35 +120,178 @@ class ClassificationCache:
             json.dump(self._entries, f, indent=2)
 
 
-class BaseClassifier:
-    """Shared helpers for concrete classifier implementations."""
+def _require(module_name: str, install_hint: str):
+    """Import an optional provider SDK, or explain how to install it.
 
-    def classify(self, song: Song) -> ClassificationResult:  # pragma: no cover
-        raise NotImplementedError
+    Provider SDKs are imported lazily so that using Claude doesn't require
+    the OpenAI or Gemini packages to be installed, and vice versa.
+    """
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ClassificationError(
+            f"The `{module_name}` package is required for this provider. "
+            f"Run: pip install {install_hint}"
+        ) from exc
+
+
+def _api_key(explicit: str | None, env_var: str, provider: str) -> str:
+    key = explicit or os.environ.get(env_var)
+    if not key:
+        raise ClassificationError(
+            f"No {provider} API key found. Set {env_var} in your environment, "
+            "or pass api_key= explicitly."
+        )
+    return key
+
+
+class BaseClassifier:
+    """Shared machinery for every provider adapter.
+
+    Subclasses implement `_classify_song()` (one song -> raw fields dict) and,
+    if the provider can handle several songs per request, set `batch_size` and
+    implement `_classify_songs()`. Caching, chunking, progress reporting, and
+    per-song error isolation all live here so no provider has to repeat them.
+    """
+
+    #: Songs per request. 1 means "no batching" and only `_classify_song` is used.
+    batch_size = 1
+
+    def __init__(self, use_cache: bool = True, cache_path: Path | None = None) -> None:
+        self._cache = ClassificationCache(cache_path) if use_cache else None
+
+    # -- provider hooks -----------------------------------------------------
+
+    def _classify_song(self, song: Song) -> dict:
+        """Classify one song, returning the raw fields dict from the model."""
+        raise NotImplementedError("Subclasses must implement _classify_song()")
+
+    def _classify_songs(self, songs: list[Song]) -> dict[int, dict]:
+        """Classify several songs at once, keyed by their index in `songs`.
+
+        Only called when `batch_size` > 1.
+        """
+        raise NotImplementedError("This provider does not support batching")
+
+    # -- Classifier interface ----------------------------------------------
+
+    def classify(self, song: Song) -> ClassificationResult:
+        """Classify a single song, serving from cache when possible."""
+        if self._cache is not None:
+            cached = self._cache.get(song)
+            if cached is not None:
+                try:
+                    return self._normalize(cached, song)
+                except ClassificationError:
+                    pass  # stale or corrupt entry -- fall through and re-ask
+
+        result = self._normalize(self._classify_song(song), song)
+        self._remember(result)
+        self._flush()
+        return result
 
     def classify_batch(
         self,
         songs: list[Song],
         on_progress: ProgressCallback | None = None,
     ) -> list[ClassificationResult]:
-        """Classify songs one at a time, reporting progress as we go.
+        """Classify many songs, serving what it can from the cache.
 
         A song that fails to classify is logged and skipped rather than
         aborting the run, so one bad response can't kill a 500-song job. The
         returned list may therefore be shorter than `songs`.
         """
-        results: list[ClassificationResult] = []
         total = len(songs)
-        for i, song in enumerate(songs, start=1):
-            try:
-                results.append(self.classify(song))
-            except Exception as exc:  # noqa: BLE001 -- one song must not kill the run
-                logger.warning(
-                    "Skipping %s by %s: %s", song.title, song.artist, exc
-                )
+        done = 0
+        results: list[ClassificationResult] = []
+        pending: list[Song] = []
+
+        def report() -> None:
             if on_progress is not None:
-                on_progress(i, total)
+                on_progress(done, total)
+
+        for song in songs:
+            cached = self._cache.get(song) if self._cache is not None else None
+            if cached is None:
+                pending.append(song)
+                continue
+            try:
+                results.append(self._normalize(cached, song))
+            except ClassificationError:
+                pending.append(song)
+                continue
+            done += 1
+            report()
+
+        if pending and total != len(pending):
+            logger.info(
+                "%d/%d songs served from cache; classifying %d",
+                total - len(pending),
+                total,
+                len(pending),
+            )
+
+        size = max(1, self.batch_size)
+        for start in range(0, len(pending), size):
+            chunk = pending[start : start + size]
+            results.extend(self._classify_chunk(chunk))
+            done += len(chunk)
+            report()
+
+        self._flush()
         return results
+
+    # -- internals ----------------------------------------------------------
+
+    def _classify_chunk(self, chunk: list[Song]) -> list[ClassificationResult]:
+        """Classify one chunk, falling back to single calls if the batch fails."""
+        if len(chunk) > 1:
+            try:
+                return self._collect(self._classify_songs(chunk), chunk)
+            except ClassificationError as exc:
+                logger.warning(
+                    "Batch of %d failed (%s); retrying song by song", len(chunk), exc
+                )
+
+        results: list[ClassificationResult] = []
+        for song in chunk:
+            try:
+                result = self._normalize(self._classify_song(song), song)
+            except Exception as exc:  # noqa: BLE001 -- one song must not kill the run
+                logger.warning("Skipping %s by %s: %s", song.title, song.artist, exc)
+                continue
+            self._remember(result)
+            results.append(result)
+        return results
+
+    def _collect(
+        self, fields_by_index: dict[int, dict], chunk: list[Song]
+    ) -> list[ClassificationResult]:
+        """Normalize a batch response and warn about anything the model dropped."""
+        results: list[ClassificationResult] = []
+        for index, song in enumerate(chunk):
+            fields = fields_by_index.get(index)
+            if fields is None:
+                logger.warning(
+                    "Batch response omitted %s by %s", song.title, song.artist
+                )
+                continue
+            try:
+                result = self._normalize(fields, song)
+            except ClassificationError as exc:
+                logger.warning("Skipping %s by %s: %s", song.title, song.artist, exc)
+                continue
+            self._remember(result)
+            results.append(result)
+        return results
+
+    def _remember(self, result: ClassificationResult) -> None:
+        if self._cache is not None:
+            self._cache.put(result.song, self._result_fields(result))
+
+    def _flush(self) -> None:
+        if self._cache is not None:
+            self._cache.save()
 
     @staticmethod
     def _parse_response(raw_text: str) -> dict:
@@ -236,12 +380,9 @@ class BaseClassifier:
 class ClaudeClassifier(BaseClassifier):
     """Classifier backed by the Anthropic Claude API.
 
-    Two things make this usable on a real library rather than a demo:
-
-    - Batching. One song per API call means a 2,000-song library is 2,000
-      calls; `batch_size` songs per call is a ~20x cost and latency win.
-    - Caching. Results are keyed on (title, artist) in
-      data/classification_cache.json, so re-runs only pay for new songs.
+    Batches `batch_size` songs per request, which turns a 2,000-song library
+    from 2,000 calls into ~100. Caching and error isolation come from
+    BaseClassifier.
     """
 
     def __init__(
@@ -254,20 +395,9 @@ class ClaudeClassifier(BaseClassifier):
         use_cache: bool = True,
         cache_path: Path | None = None,
     ) -> None:
-        try:
-            import anthropic
-        except ImportError as exc:  # pragma: no cover -- environment problem
-            raise ClassificationError(
-                "The `anthropic` package is required for the Claude provider. "
-                "Run: pip install -r requirements.txt"
-            ) from exc
-
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
-            raise ClassificationError(
-                "No Claude API key found. Set ANTHROPIC_API_KEY in your "
-                "environment, or pass api_key= explicitly."
-            )
+        super().__init__(use_cache=use_cache, cache_path=cache_path)
+        anthropic = _require("anthropic", "anthropic")
+        key = _api_key(api_key, "ANTHROPIC_API_KEY", "Claude")
 
         self._anthropic = anthropic
         # The SDK retries 429s and 5xx with exponential backoff itself; 5 is a
@@ -277,9 +407,6 @@ class ClaudeClassifier(BaseClassifier):
         self.batch_size = batch_size
         self.max_tokens = max_tokens
         self.effort = effort
-        self._cache = ClassificationCache(cache_path) if use_cache else None
-
-    # -- API plumbing -------------------------------------------------------
 
     def _call(self, prompt: str, schema: dict) -> dict:
         """Send one request and return the parsed JSON object.
@@ -330,176 +457,215 @@ class ClaudeClassifier(BaseClassifier):
             raise ClassificationError("Claude returned no text content.")
         return self._parse_response(text)
 
-    # -- Classifier interface ----------------------------------------------
+    def _classify_song(self, song: Song) -> dict:
+        return self._call(build_classification_prompt(song), CLASSIFICATION_SCHEMA)
 
-    def classify(self, song: Song) -> ClassificationResult:
-        """Classify a single song (one API call)."""
-        if self._cache is not None:
-            cached = self._cache.get(song)
-            if cached is not None:
-                return self._normalize(cached, song)
-
-        fields = self._call(build_classification_prompt(song), CLASSIFICATION_SCHEMA)
-        result = self._normalize(fields, song)
-        self._remember(result)
-        return result
-
-    def classify_batch(
-        self,
-        songs: list[Song],
-        on_progress: ProgressCallback | None = None,
-    ) -> list[ClassificationResult]:
-        """Classify songs in batches, serving what it can from the cache.
-
-        Songs that fail even after a per-song retry are logged and skipped, so
-        the returned list may be shorter than `songs`.
-        """
-        total = len(songs)
-        done = 0
-        results: list[ClassificationResult] = []
-        pending: list[Song] = []
-
-        def report() -> None:
-            if on_progress is not None:
-                on_progress(done, total)
-
-        for song in songs:
-            cached = self._cache.get(song) if self._cache is not None else None
-            if cached is None:
-                pending.append(song)
-                continue
-            try:
-                results.append(self._normalize(cached, song))
-            except ClassificationError:
-                pending.append(song)  # stale/corrupt entry -- just re-classify
-                continue
-            done += 1
-            report()
-
-        if pending:
-            logger.info(
-                "%d/%d songs served from cache; classifying %d",
-                total - len(pending),
-                total,
-                len(pending),
-            )
-
-        for start in range(0, len(pending), self.batch_size):
-            chunk = pending[start : start + self.batch_size]
-            chunk_results = self._classify_chunk(chunk)
-            results.extend(chunk_results)
-            done += len(chunk)
-            report()
-
-        self._flush()
-        return results
-
-    # -- internals ----------------------------------------------------------
-
-    def _classify_chunk(self, chunk: list[Song]) -> list[ClassificationResult]:
-        """Classify one chunk, falling back to per-song calls on failure."""
-        try:
-            payload = self._call(build_batch_prompt(chunk), BATCH_SCHEMA)
-            return self._results_from_batch(payload, chunk)
-        except ClassificationError as exc:
-            logger.warning(
-                "Batch of %d failed (%s); retrying song by song", len(chunk), exc
-            )
-
-        results: list[ClassificationResult] = []
-        for song in chunk:
-            try:
-                results.append(self.classify(song))
-            except Exception as exc:  # noqa: BLE001 -- one song must not kill the run
-                logger.warning("Skipping %s by %s: %s", song.title, song.artist, exc)
-        return results
-
-    def _results_from_batch(
-        self, payload: dict, chunk: list[Song]
-    ) -> list[ClassificationResult]:
-        """Match batch entries back to songs via the echoed `index` field."""
-        entries = payload.get("results")
-        if not isinstance(entries, list):
-            raise ClassificationError("Batch response had no `results` list.")
-
-        results: list[ClassificationResult] = []
-        seen: set[int] = set()
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            index = entry.get("index")
-            if not isinstance(index, int) or not 0 <= index < len(chunk):
-                logger.warning("Dropping batch entry with bad index %r", index)
-                continue
-            if index in seen:
-                logger.warning("Dropping duplicate batch entry for index %d", index)
-                continue
-            song = chunk[index]
-            try:
-                result = self._normalize(entry, song)
-            except ClassificationError as exc:
-                logger.warning("Skipping %s by %s: %s", song.title, song.artist, exc)
-                continue
-            seen.add(index)
-            results.append(result)
-            self._remember(result)
-
-        missing = [chunk[i] for i in range(len(chunk)) if i not in seen]
-        for song in missing:
-            logger.warning(
-                "Batch response omitted %s by %s", song.title, song.artist
-            )
-        return results
-
-    def _remember(self, result: ClassificationResult) -> None:
-        if self._cache is not None:
-            self._cache.put(result.song, self._result_fields(result))
-
-    def _flush(self) -> None:
-        if self._cache is not None:
-            self._cache.save()
+    def _classify_songs(self, songs: list[Song]) -> dict[int, dict]:
+        payload = self._call(build_batch_prompt(songs), BATCH_SCHEMA)
+        return _index_batch(payload, len(songs))
 
 
 class OpenAIClassifier(BaseClassifier):
-    """Stub adapter for OpenAI models. Same interface as ClaudeClassifier.
+    """Classifier backed by the OpenAI API.
 
-    TODO(Part B, optional/stretch): implement using the OpenAI SDK. Reuse
-    BaseClassifier._parse_response() and ._normalize() -- only the API call
-    itself should differ.
+    Uses the same prompts and the same JSON Schema as the Claude adapter --
+    only the transport differs. Install with: pip install openai
     """
 
-    def __init__(self, api_key: str | None = None, model: str = "gpt-4o") -> None:
-        raise NotImplementedError("Part B (stretch): implement OpenAIClassifier")
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "gpt-4o",
+        batch_size: int = 20,
+        use_cache: bool = True,
+        cache_path: Path | None = None,
+    ) -> None:
+        super().__init__(use_cache=use_cache, cache_path=cache_path)
+        openai = _require("openai", "openai")
+        key = _api_key(api_key, "OPENAI_API_KEY", "OpenAI")
 
-    def classify(self, song: Song) -> ClassificationResult:
-        raise NotImplementedError("Part B (stretch): implement OpenAIClassifier.classify()")
+        self._openai = openai
+        self._client = openai.OpenAI(api_key=key, max_retries=5)
+        self.model = model
+        self.batch_size = batch_size
+
+    def _call(self, prompt: str, schema: dict, schema_name: str) -> dict:
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema_name,
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 -- SDK error types vary by version
+            raise ClassificationError(f"OpenAI API error: {exc}") from exc
+
+        choice = response.choices[0]
+        if getattr(choice.message, "refusal", None):
+            raise ClassificationError(
+                f"OpenAI declined to classify: {choice.message.refusal}"
+            )
+        if choice.finish_reason == "length":
+            raise ClassificationError(
+                "Response was truncated. Lower batch_size for this provider."
+            )
+        return self._parse_response(choice.message.content or "")
+
+    def _classify_song(self, song: Song) -> dict:
+        return self._call(
+            build_classification_prompt(song), CLASSIFICATION_SCHEMA, "classification"
+        )
+
+    def _classify_songs(self, songs: list[Song]) -> dict[int, dict]:
+        payload = self._call(build_batch_prompt(songs), BATCH_SCHEMA, "classifications")
+        return _index_batch(payload, len(songs))
 
 
 class GeminiClassifier(BaseClassifier):
-    """Stub adapter for Google Gemini models. Same interface as ClaudeClassifier.
+    """Classifier backed by Google Gemini.
 
-    TODO(Part B, optional/stretch): implement using the google-genai SDK.
+    Gemini's `response_schema` accepts a different JSON Schema dialect than
+    the one in prompts.py (no `additionalProperties`, for one), so this asks
+    for JSON mode only and leans on BaseClassifier._normalize() to enforce the
+    vocabulary and bounds. Install with: pip install google-genai
     """
 
-    def __init__(self, api_key: str | None = None, model: str = "gemini-1.5-pro") -> None:
-        raise NotImplementedError("Part B (stretch): implement GeminiClassifier")
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "gemini-1.5-pro",
+        batch_size: int = 20,
+        use_cache: bool = True,
+        cache_path: Path | None = None,
+    ) -> None:
+        super().__init__(use_cache=use_cache, cache_path=cache_path)
+        genai = _require("google.genai", "google-genai")
+        key = _api_key(api_key, "GEMINI_API_KEY", "Gemini")
 
-    def classify(self, song: Song) -> ClassificationResult:
-        raise NotImplementedError("Part B (stretch): implement GeminiClassifier.classify()")
+        self._genai = genai
+        self._client = genai.Client(api_key=key)
+        self.model = model
+        self.batch_size = batch_size
+
+    def _call(self, prompt: str) -> dict:
+        try:
+            response = self._client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config={
+                    "system_instruction": SYSTEM_PROMPT,
+                    "response_mime_type": "application/json",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 -- SDK error types vary by version
+            raise ClassificationError(f"Gemini API error: {exc}") from exc
+
+        text = getattr(response, "text", None)
+        if not text:
+            raise ClassificationError("Gemini returned no text content.")
+        return self._parse_response(text)
+
+    def _classify_song(self, song: Song) -> dict:
+        return self._call(build_classification_prompt(song))
+
+    def _classify_songs(self, songs: list[Song]) -> dict[int, dict]:
+        return _index_batch(self._call(build_batch_prompt(songs)), len(songs))
 
 
 class OllamaClassifier(BaseClassifier):
-    """Stub adapter for local Ollama models. Same interface as ClaudeClassifier.
+    """Classifier backed by a local Ollama server -- no API key, no cost.
 
-    TODO(Part B, optional/stretch): implement via local HTTP call to
-    http://localhost:11434/api/generate or the ollama python package.
+    Talks to Ollama's HTTP API with the standard library rather than adding a
+    dependency. Batching defaults to 5 rather than 20 because local models
+    handle long multi-song prompts less reliably than hosted ones.
     """
 
-    def __init__(self, model: str = "llama3") -> None:
-        raise NotImplementedError("Part B (stretch): implement OllamaClassifier")
+    def __init__(
+        self,
+        model: str = "llama3",
+        host: str = "http://localhost:11434",
+        batch_size: int = 5,
+        timeout: float = 180.0,
+        use_cache: bool = True,
+        cache_path: Path | None = None,
+    ) -> None:
+        super().__init__(use_cache=use_cache, cache_path=cache_path)
+        self.model = model
+        self.host = host.rstrip("/")
+        self.batch_size = batch_size
+        self.timeout = timeout
 
-    def classify(self, song: Song) -> ClassificationResult:
-        raise NotImplementedError("Part B (stretch): implement OllamaClassifier.classify()")
+    def _call(self, prompt: str) -> dict:
+        import urllib.error
+        import urllib.request
+
+        body = json.dumps(
+            {
+                "model": self.model,
+                "prompt": prompt,
+                "system": SYSTEM_PROMPT,
+                "format": "json",
+                "stream": False,
+            }
+        ).encode()
+        request = urllib.request.Request(
+            f"{self.host}/api/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                payload = json.load(response)
+        except urllib.error.URLError as exc:
+            raise ClassificationError(
+                f"Could not reach Ollama at {self.host} ({exc}). Is `ollama serve` "
+                "running?"
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise ClassificationError(f"Ollama returned malformed JSON: {exc}") from exc
+
+        return self._parse_response(payload.get("response", ""))
+
+    def _classify_song(self, song: Song) -> dict:
+        return self._call(build_classification_prompt(song))
+
+    def _classify_songs(self, songs: list[Song]) -> dict[int, dict]:
+        return _index_batch(self._call(build_batch_prompt(songs)), len(songs))
+
+
+def _index_batch(payload: dict, count: int) -> dict[int, dict]:
+    """Turn a `{"results": [...]}` batch response into {index: fields}.
+
+    Matching on the echoed `index` rather than list position means a model
+    that reorders or repeats entries can't silently misattribute a
+    classification to the wrong song.
+    """
+    entries = payload.get("results")
+    if not isinstance(entries, list):
+        raise ClassificationError("Batch response had no `results` list.")
+
+    by_index: dict[int, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        index = entry.get("index")
+        if not isinstance(index, int) or not 0 <= index < count:
+            logger.warning("Dropping batch entry with bad index %r", index)
+            continue
+        if index in by_index:
+            logger.warning("Dropping duplicate batch entry for index %d", index)
+            continue
+        by_index[index] = entry
+    return by_index
 
 
 _PROVIDERS: dict[str, type] = {

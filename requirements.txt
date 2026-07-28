@@ -6,3 +6,8 @@ python-dotenv>=1.0.0
 # Testing
 pytest>=8.0.0
 httpx>=0.27.0
+
+# Optional LLM providers -- imported lazily, install only what you use.
+# The Ollama adapter needs no package, just a local `ollama serve`.
+#   pip install openai
+#   pip install google-genai
