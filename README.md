@@ -22,6 +22,12 @@ Shared JSON contracts (all under `data/`, gitignored):
 - `library_export.json` — Part A's output, Part B's input
 - `classified_songs.json` — Part B's output, Part C's input
 - `playlist_plan.json` — Part C's grouping output (human-readable preview)
+- `classification_cache.json` — Part B's internal cache, keyed on
+  `(title, artist)`; delete it to force a full re-classification
+
+`tests/fixtures/library_export.json` is a checked-in 15-song sample with the
+same shape as Part A's output, so Parts B/C/D can be developed and tested
+before the AppleScript export lands.
 
 ## Installation
 
@@ -83,6 +89,22 @@ CLI smoke test (runs the full pipeline once, no GUI):
 python app.py
 ```
 
+Classify the sample library without Apple Music or Part A (one real API call
+per batch of 20 songs):
+
+```bash
+python classifier.py tests/fixtures/library_export.json
+```
+
+## Tests
+
+```bash
+pytest
+```
+
+Part B's tests run against `tests/fixtures/library_export.json` and a fake
+Anthropic client — no API key, no network, no Apple Music.
+
 ## Workflow
 
 1. **Export Library** — reads every playlist and song from Apple Music into `data/library_export.json`
@@ -97,7 +119,11 @@ All classifiers implement the `Classifier` protocol in `classifier.py`:
 ```python
 class Classifier(Protocol):
     def classify(self, song: Song) -> ClassificationResult: ...
-    def classify_batch(self, songs: list[Song]) -> list[ClassificationResult]: ...
+    def classify_batch(
+        self,
+        songs: list[Song],
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> list[ClassificationResult]: ...
 ```
 
 To add a new provider:
