@@ -1,0 +1,33 @@
+{
+  "parts": {
+    "A": {
+      "label": "Data Export Layer",
+      "owner": "you",
+      "done": 3,
+      "total": 3,
+      "percent": 100
+    },
+    "B": {
+      "label": "AI Classification",
+      "owner": "Rajesh",
+      "done": 0,
+      "total": 12,
+      "percent": 0
+    },
+    "C": {
+      "label": "Playlist Logic + Write-back",
+      "owner": "you",
+      "done": 4,
+      "total": 4,
+      "percent": 100
+    },
+    "D": {
+      "label": "GUI + Web App Design",
+      "owner": "Rajesh",
+      "done": 0,
+      "total": 7,
+      "percent": 0
+    }
+  },
+  "overall_percent": 27
+}

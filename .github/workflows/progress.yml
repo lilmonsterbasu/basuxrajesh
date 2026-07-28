@@ -1,0 +1,29 @@
+name: Update progress tracker
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "PROGRESS.md"
+      - "progress.json"
+
+permissions:
+  contents: write
+
+jobs:
+  update-progress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Regenerate PROGRESS.md and progress.json
+        run: python3 scripts/progress.py
+      - name: Commit if changed
+        run: |
+          git config user.name "playlist-ai-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add PROGRESS.md progress.json
+          git diff --cached --quiet || git commit -m "Update progress tracker [skip ci]"
+          git push
