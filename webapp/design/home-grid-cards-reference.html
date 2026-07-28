@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f5f7; color: #1d1d1f; -webkit-font-smoothing: antialiased; }
+a { color: #0071e3; text-decoration: none; }
+</style>
+</helmet>
+
+<div style="min-height: 100vh; background: linear-gradient(180deg, #f5f5f7 0%, #ffffff 100%); padding: 60px 40px;">
+  <div style="max-width: 1100px; margin: 0 auto;">
+    
+    <div style="text-align: center; margin-bottom: 100px;">
+      <p style="font-size: 12px; letter-spacing: 0.5px; color: #86868b; font-weight: 500; margin-bottom: 12px;">PLAYLIST AI</p>
+      <h1 style="font-size: 60px; font-weight: 700; letter-spacing: -1px; margin-bottom: 16px;">Discover Your Sound</h1>
+      <p style="font-size: 17px; color: #86868b; max-width: 550px; margin: 0 auto; font-weight: 400; line-height: 1.5;">Artificial intelligence learns your taste. Organizes 2,847 songs into 12 perfect playlists.</p>
+    </div>
+
+    <div style="display: flex; justify-content: center; gap: 12px; margin-bottom: 120px;">
+      <button style="padding: 12px 32px; background: #0071e3; color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 16px rgba(0,113,227,0.2);">
+        Analyze Now
+      </button>
+      <button style="padding: 12px 32px; background: white; color: #0071e3; border: 1px solid rgba(0,113,227,0.2); border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer;">
+        View Results
+      </button>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px;">
+      
+      <div style="padding: 32px; background: white; border-radius: 18px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.05);">
+        <div style="width: 100%; height: 120px; background: #ff6b6b; border-radius: 14px; margin-bottom: 20px;"></div>
+        <p style="font-size: 12px; color: #86868b; font-weight: 500; letter-spacing: 0.5px; margin-bottom: 8px;">FOCUS WORK</p>
+        <h3 style="font-size: 20px; font-weight: 600; margin-bottom: 8px;">Deep Focus</h3>
+        <p style="font-size: 13px; color: #86868b;">267 songs</p>
+      </div>
+
+      <div style="padding: 32px; background: white; border-radius: 18px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.05);">
+        <div style="width: 100%; height: 120px; background: #0a84ff; border-radius: 14px; margin-bottom: 20px;"></div>
+        <p style="font-size: 12px; color: #86868b; font-weight: 500; letter-spacing: 0.5px; margin-bottom: 8px;">LATE NIGHT</p>
+        <h3 style="font-size: 20px; font-weight: 600; margin-bottom: 8px;">Midnight Moods</h3>
+        <p style="font-size: 13px; color: #86868b;">142 songs</p>
+      </div>
+
+      <div style="padding: 32px; background: white; border-radius: 18px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.05);">
+        <div style="width: 100%; height: 120px; background: #ff9500; border-radius: 14px; margin-bottom: 20px;"></div>
+        <p style="font-size: 12px; color: #86868b; font-weight: 500; letter-spacing: 0.5px; margin-bottom: 8px;">HIGH ENERGY</p>
+        <h3 style="font-size: 20px; font-weight: 600; margin-bottom: 8px;">Workout Hits</h3>
+        <p style="font-size: 13px; color: #86868b;">156 songs</p>
+      </div>
+
+      <div style="padding: 32px; background: white; border-radius: 18px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.05);">
+        <div style="width: 100%; height: 120px; background: #34c759; border-radius: 14px; margin-bottom: 20px;"></div>
+        <p style="font-size: 12px; color: #86868b; font-weight: 500; letter-spacing: 0.5px; margin-bottom: 8px;">ROAD TRIP</p>
+        <h3 style="font-size: 20px; font-weight: 600; margin-bottom: 8px;">Highway Jams</h3>
+        <p style="font-size: 13px; color: #86868b;">89 songs</p>
+      </div>
+
+      <div style="padding: 32px; background: white; border-radius: 18px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.05);">
+        <div style="width: 100%; height: 120px; background: #af52de; border-radius: 14px; margin-bottom: 20px;"></div>
+        <p style="font-size: 12px; color: #86868b; font-weight: 500; letter-spacing: 0.5px; margin-bottom: 8px;">RELAXATION</p>
+        <h3 style="font-size: 20px; font-weight: 600; margin-bottom: 8px;">Coffee Vibes</h3>
+        <p style="font-size: 13px; color: #86868b;">203 songs</p>
+      </div>
+
+      <div style="padding: 32px; background: white; border-radius: 18px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.05);">
+        <div style="width: 100%; height: 120px; background: #feca57; border-radius: 14px; margin-bottom: 20px;"></div>
+        <p style="font-size: 12px; color: #86868b; font-weight: 500; letter-spacing: 0.5px; margin-bottom: 8px;">CELEBRATION</p>
+        <h3 style="font-size: 20px; font-weight: 600; margin-bottom: 8px;">Party Mode</h3>
+        <p style="font-size: 13px; color: #86868b;">178 songs</p>
+      </div>
+
+    </div>
+
+    <div style="margin-top: 120px; padding-top: 60px; border-top: 1px solid rgba(0,0,0,0.08); display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; text-align: center;">
+      <div><p style="font-size: 32px; font-weight: 700;">2,847</p><p style="font-size: 13px; color: #86868b; margin-top: 4px;">Songs Analyzed</p></div>
+      <div><p style="font-size: 32px; font-weight: 700;">341</p><p style="font-size: 13px; color: #86868b; margin-top: 4px;">Unique Artists</p></div>
+      <div><p style="font-size: 32px; font-weight: 700;">12</p><p style="font-size: 13px; color: #86868b; margin-top: 4px;">AI Playlists</p></div>
+    </div>
+
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+
+</script>
+</body>
+</html>
