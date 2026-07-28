@@ -81,35 +81,94 @@ def _run_applescript(script_name: str, *args: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _coerce_song(raw: dict) -> Song:
+    """Build a Song from one entry of the AppleScript JSON `songs` list.
+
+    AppleScript emits year/play_count as ints and duration as a float, but
+    we coerce defensively since a track with missing metadata comes through
+    as an empty string or 0 from export_library.scpt, not a JSON null.
+    """
+    return Song(
+        title=str(raw.get("title", "")),
+        artist=str(raw.get("artist", "")),
+        album=str(raw.get("album", "")),
+        genre=str(raw.get("genre", "")),
+        year=int(raw.get("year") or 0),
+        play_count=int(raw.get("play_count") or 0),
+        duration=float(raw.get("duration") or 0.0),
+    )
+
+
 def export_library() -> tuple[list[Song], list[Playlist]]:
     """Run export_library.scpt, parse the JSON, return (songs, playlists).
 
-    TODO(Part A):
-    - Call _run_applescript("export_library.scpt")
-    - json.loads the result
-    - Build Song objects for each entry in result["songs"]
-    - Build Playlist objects for each entry in result["playlists"],
-      resolving song_titles -> song keys (title, artist) as needed
-    - Cache/save to library_export.json (see save_library_export)
+    Raises:
+        AppleScriptError: if osascript fails (e.g. Music.app automation
+            permission not granted -- see README "Permissions" section).
+        json.JSONDecodeError: if the script's stdout wasn't valid JSON.
     """
-    raise NotImplementedError("Part A: implement export_library()")
+    raw_output = _run_applescript("export_library.scpt")
+    try:
+        data = json.loads(raw_output)
+    except json.JSONDecodeError:
+        logger.error("export_library.scpt did not return valid JSON: %r", raw_output[:500])
+        raise
+
+    songs = [_coerce_song(entry) for entry in data.get("songs", [])]
+
+    playlists: list[Playlist] = []
+    for entry in data.get("playlists", []):
+        song_keys = [
+            (str(t.get("title", "")).strip().lower(), str(t.get("artist", "")).strip().lower())
+            for t in entry.get("tracks", [])
+        ]
+        playlists.append(Playlist(name=str(entry.get("name", "")), song_keys=song_keys))
+
+    logger.info("export_library: parsed %d songs, %d playlists", len(songs), len(playlists))
+    return songs, playlists
 
 
 def save_library_export(songs: list[Song], path: Path) -> None:
-    """Serialize songs to library_export.json for Part B to consume.
+    """Serialize songs to a JSON file for Part B to consume.
 
-    TODO(Part A): decide final JSON shape and keep it in sync with
-    classifier.py's expectations (list of song dicts).
+    JSON shape: a plain list of song dicts, one key per Song field, e.g.
+        [{"title": "...", "artist": "...", "album": "...", "genre": "...",
+          "year": 2020, "play_count": 12, "duration": 214.5}, ...]
     """
-    raise NotImplementedError("Part A: implement save_library_export()")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = [
+        {
+            "title": s.title,
+            "artist": s.artist,
+            "album": s.album,
+            "genre": s.genre,
+            "year": s.year,
+            "play_count": s.play_count,
+            "duration": s.duration,
+        }
+        for s in songs
+    ]
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    logger.info("Saved %d songs to %s", len(songs), path)
 
 
 def load_library_export(path: Path) -> list[Song]:
-    """Load a previously exported library_export.json back into Song objects.
+    """Load a previously exported library JSON file back into Song objects.
 
-    TODO(Part A): mirror save_library_export()'s shape.
+    Raises:
+        FileNotFoundError: if `path` doesn't exist yet (run export first).
+        json.JSONDecodeError: if the file is corrupt.
     """
-    raise NotImplementedError("Part A: implement load_library_export()")
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found -- run the Export Library step first"
+        )
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    songs = [_coerce_song(entry) for entry in data]
+    logger.info("Loaded %d songs from %s", len(songs), path)
+    return songs
 
 
 # ---------------------------------------------------------------------------
