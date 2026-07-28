@@ -1,11 +1,11 @@
 # Playlist AI -- Progress
 
-**Overall: 27% complete**
+**Overall: 50% complete**
 
 | Part | Owner | Progress | % |
 |------|-------|----------|---|
 | A -- Data Export Layer | you | `####################` (3/3) | 100% |
-| B -- AI Classification | Rajesh | `--------------------` (0/12) | 0% |
+| B -- AI Classification | Rajesh | `##########----------` (6/12) | 50% |
 | C -- Playlist Logic + Write-back | you | `####################` (4/4) | 100% |
 | D -- GUI + Web App Design | Rajesh | `--------------------` (0/7) | 0% |
 
