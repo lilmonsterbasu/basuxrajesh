@@ -13,9 +13,16 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import asdict
 from pathlib import Path
+from typing import Callable
 
-from classifier import ClassificationResult, get_classifier, save_classified_songs
+from classifier import (
+    ClassificationResult,
+    get_classifier,
+    load_classified_songs,
+    save_classified_songs,
+)
 from music import (
     Song,
     build_playlists,
@@ -24,6 +31,10 @@ from music import (
     save_library_export,
     sync_playlists_to_music,
 )
+
+# Progress callback signature: on_progress(done, total). The GUI and the web
+# dashboard both use this to drive a progress bar during classification.
+ProgressCallback = Callable[[int, int], None]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -46,17 +57,61 @@ def run_export_library() -> list[Song]:
     return songs
 
 
-def run_analyze_songs(provider: str = "claude") -> list[ClassificationResult]:
+def run_analyze_songs(
+    provider: str = "claude",
+    on_progress: ProgressCallback | None = None,
+) -> list[ClassificationResult]:
     """Step 2: classify every exported song with the configured LLM provider.
 
     Depends on: Part B's get_classifier() / Classifier.classify_batch().
+    `on_progress` is forwarded straight through so the UI layers can show a
+    progress bar without knowing anything about the provider.
     """
     songs = load_library_export(LIBRARY_EXPORT_PATH)
     classifier = get_classifier(provider=provider)
-    results = classifier.classify_batch(songs)
+    results = classifier.classify_batch(songs, on_progress=on_progress)
     save_classified_songs(results, CLASSIFIED_SONGS_PATH)
     logger.info("Classified %d songs using provider=%s", len(results), provider)
     return results
+
+
+def load_analysis() -> list[ClassificationResult]:
+    """Re-read the last classification run from disk.
+
+    Lets "Preview Results" rebuild a plan without paying for classification
+    again, and lets the web dashboard survive a server restart.
+    """
+    return load_classified_songs(CLASSIFIED_SONGS_PATH)
+
+
+def save_playlist_plan(plan: dict[str, list[Song]]) -> None:
+    """Persist a playlist plan, including full song rows.
+
+    Storing whole songs rather than bare titles is what makes the plan
+    round-trippable: the web dashboard lets the user drag songs between
+    playlists, and the edited plan has to come back as real Song objects
+    before Part C can write it to Apple Music.
+    """
+    PLAYLIST_PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with PLAYLIST_PLAN_PATH.open("w") as f:
+        json.dump(
+            {name: [asdict(song) for song in songs] for name, songs in plan.items()},
+            f,
+            indent=2,
+        )
+
+
+def load_playlist_plan() -> dict[str, list[Song]]:
+    """Read back a plan saved by save_playlist_plan()."""
+    if not PLAYLIST_PLAN_PATH.exists():
+        raise FileNotFoundError(
+            f"{PLAYLIST_PLAN_PATH} not found -- build a playlist plan first"
+        )
+    with PLAYLIST_PLAN_PATH.open() as f:
+        payload = json.load(f)
+    return {
+        name: [Song(**row) for row in rows] for name, rows in payload.items()
+    }
 
 
 def run_build_playlist_plan(classified_songs: list[ClassificationResult]) -> dict[str, list[Song]]:
@@ -65,12 +120,7 @@ def run_build_playlist_plan(classified_songs: list[ClassificationResult]) -> dic
     Depends on: Part C's music.build_playlists().
     """
     plan = build_playlists(classified_songs)
-    with PLAYLIST_PLAN_PATH.open("w") as f:
-        json.dump(
-            {name: [s.title for s in songs] for name, songs in plan.items()},
-            f,
-            indent=2,
-        )
+    save_playlist_plan(plan)
     logger.info("Built playlist plan with %d playlists", len(plan))
     return plan
 

@@ -1,31 +1,728 @@
 <!-- OWNER: Part D (GUI + Web App Design) -- web dashboard frontend
 
-TODO(Part D):
-- Build the dashboard UI here (plain HTML/CSS/JS, or swap in a small
-  React/Vite build if preferred -- keep it self-contained under webapp/).
-- Sections needed:
-  1. Library view: table of all songs (title/artist/album/genre/year/
-     play count/duration)
-  2. Classification view: same table with genre/energy/mood/contexts
-     columns added after "Analyze"
-  3. Playlist preview: cards per playlist name showing member songs,
-     with the ability to drag a song into/out of a playlist before
-     confirming
-  4. Action buttons: Export Library / Analyze Songs / Create Playlists
-     (mirrors the Tkinter app's 4 buttons, calling the same /api/* routes
-     from webapp/server.py)
-  5. Console/log panel showing progress messages
-- Keep styling clean and simple; this is the "web app designing" deliverable
-  so visual polish matters here specifically.
+Self-contained: no build step, no CDN, no framework. Talks to the /api/*
+routes in webapp/server.py, which are the same app.py orchestration calls the
+Tkinter app uses.
 -->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Playlist AI</title>
+  <style>
+    :root {
+      --ink: #14110f;
+      --surface: #faf7f2;
+      --panel: #ffffff;
+      --line: #e3ddd3;
+      --muted: #6f665c;
+      --accent: #b4451f;
+      --accent-soft: #f6e5dd;
+      --ok: #1f6f4a;
+      --warn: #9a6b12;
+      --radius: 10px;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #f2ede6;
+        --surface: #16130f;
+        --panel: #1f1b17;
+        --line: #322c25;
+        --muted: #a2988c;
+        --accent: #e2763f;
+        --accent-soft: #33231a;
+        --ok: #5fbf90;
+        --warn: #d9a531;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--surface);
+      color: var(--ink);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    header {
+      display: flex;
+      align-items: baseline;
+      gap: 14px;
+      flex-wrap: wrap;
+      padding: 22px 28px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0;
+      font: 600 21px/1.2 Georgia, "Iowan Old Style", serif;
+      letter-spacing: -0.01em;
+    }
+
+    .tagline { color: var(--muted); font-size: 13px; }
+
+    .steps {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 18px 28px;
+    }
+
+    button {
+      font: inherit;
+      font-weight: 500;
+      padding: 9px 15px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    button .step-no {
+      font-variant-numeric: tabular-nums;
+      color: var(--muted);
+      margin-right: 7px;
+    }
+
+    button.primary .step-no { color: rgba(255, 255, 255, .7); }
+
+    .bar-wrap { padding: 0 28px 10px; }
+
+    .bar {
+      height: 5px;
+      background: var(--line);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    .bar > i {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: var(--accent);
+      transition: width .3s;
+    }
+
+    .bar.indeterminate > i {
+      width: 35%;
+      animation: slide 1.1s ease-in-out infinite;
+    }
+
+    @keyframes slide {
+      0% { margin-left: -35%; }
+      100% { margin-left: 100%; }
+    }
+
+    #status { color: var(--muted); font-size: 13px; padding: 7px 0 0; }
+
+    nav {
+      display: flex;
+      gap: 4px;
+      padding: 0 28px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    nav button {
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      background: none;
+      color: var(--muted);
+      padding: 11px 12px;
+    }
+
+    nav button[aria-selected="true"] {
+      color: var(--ink);
+      border-bottom-color: var(--accent);
+    }
+
+    main { padding: 22px 28px 40px; }
+    section[hidden] { display: none; }
+
+    .empty {
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px dashed var(--line);
+      border-radius: var(--radius);
+      padding: 34px;
+      text-align: center;
+    }
+
+    .table-scroll {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+
+    table { border-collapse: collapse; width: 100%; font-size: 14px; }
+
+    th, td {
+      text-align: left;
+      padding: 9px 13px;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+
+    th {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+    }
+
+    tbody tr:last-child td { border-bottom: 0; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .tag {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      margin: 1px 3px 1px 0;
+      border-radius: 99px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      white-space: nowrap;
+    }
+
+    .energy {
+      display: inline-block;
+      width: 34px;
+      height: 5px;
+      border-radius: 99px;
+      background: var(--line);
+      vertical-align: middle;
+      margin-left: 7px;
+    }
+
+    .energy > i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+
+    .plan-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .hint { color: var(--muted); font-size: 13px; }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(255px, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      min-height: 130px;
+    }
+
+    .card.drop-target {
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+
+    .card h3 {
+      margin: 0;
+      padding: 11px 14px;
+      font-size: 14px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .card h3 span { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+
+    .card ul { list-style: none; margin: 0; padding: 6px; flex: 1; }
+
+    .card li {
+      padding: 6px 8px;
+      border-radius: 7px;
+      cursor: grab;
+      font-size: 13px;
+    }
+
+    .card li:hover { background: var(--accent-soft); }
+    .card li.dragging { opacity: .4; }
+    .card li .who { display: block; color: var(--muted); font-size: 11.5px; }
+
+    .card .none { color: var(--muted); font-size: 13px; padding: 10px; }
+
+    #console-panel {
+      position: sticky;
+      bottom: 0;
+      background: var(--panel);
+      border-top: 1px solid var(--line);
+    }
+
+    #console-panel > summary {
+      cursor: pointer;
+      padding: 9px 28px;
+      font-size: 13px;
+      color: var(--muted);
+      user-select: none;
+    }
+
+    #console {
+      margin: 0;
+      padding: 0 28px 16px;
+      max-height: 190px;
+      overflow-y: auto;
+      font: 12px/1.65 var(--mono);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .line-error { color: var(--accent); }
+    .line-ok { color: var(--ok); }
+  </style>
 </head>
 <body>
-  <h1>Playlist AI — Web Dashboard (stub)</h1>
-  <p>TODO(Part D): build the dashboard UI described in the comment above.</p>
+  <header>
+    <h1>Playlist AI</h1>
+    <span class="tagline">Organise your Apple Music library into smart playlists.</span>
+  </header>
+
+  <div class="steps">
+    <button id="btn-export"><span class="step-no">1</span>Export Library</button>
+    <button id="btn-analyze"><span class="step-no">2</span>Analyze Songs</button>
+    <button id="btn-preview"><span class="step-no">3</span>Preview Results</button>
+    <button id="btn-create" class="primary"><span class="step-no">4</span>Create Playlists</button>
+  </div>
+
+  <div class="bar-wrap">
+    <div class="bar" id="bar"><i></i></div>
+    <div id="status">Idle</div>
+  </div>
+
+  <nav>
+    <button data-tab="library" aria-selected="true">Library</button>
+    <button data-tab="analysis" aria-selected="false">Classifications</button>
+    <button data-tab="plan" aria-selected="false">Playlists</button>
+  </nav>
+
+  <main>
+    <section id="tab-library">
+      <div id="library-body" class="empty">No library yet — run <b>Export Library</b>.</div>
+    </section>
+
+    <section id="tab-analysis" hidden>
+      <div id="analysis-body" class="empty">No classifications yet — run <b>Analyze Songs</b>.</div>
+    </section>
+
+    <section id="tab-plan" hidden>
+      <div class="plan-toolbar">
+        <button id="btn-rebuild">Rebuild from analysis</button>
+        <button id="btn-save" disabled>Save changes</button>
+        <span class="hint">Drag a song onto another playlist to move it. Nothing reaches Apple Music until you press <b>Create Playlists</b>.</span>
+      </div>
+      <div id="plan-body" class="empty">No plan yet — run <b>Preview Results</b>.</div>
+    </section>
+  </main>
+
+  <details id="console-panel" open>
+    <summary>Console</summary>
+    <pre id="console"></pre>
+  </details>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const state = { plan: null, dirty: false, busy: false };
+
+    // -- console + status -------------------------------------------------
+
+    function log(message, kind) {
+      const el = $("#console");
+      const line = document.createElement("div");
+      if (kind) line.className = "line-" + kind;
+      line.textContent = message;
+      el.appendChild(line);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function status(text) { $("#status").textContent = text; }
+
+    function progress(done, total) {
+      const bar = $("#bar");
+      if (total > 0) {
+        bar.classList.remove("indeterminate");
+        bar.firstElementChild.style.width = Math.round((done / total) * 100) + "%";
+      } else {
+        bar.classList.add("indeterminate");
+        bar.firstElementChild.style.width = "";
+      }
+    }
+
+    function resetBar() {
+      $("#bar").classList.remove("indeterminate");
+      $("#bar").firstElementChild.style.width = "0";
+    }
+
+    function setBusy(busy) {
+      state.busy = busy;
+      ["#btn-export", "#btn-analyze", "#btn-preview", "#btn-create", "#btn-rebuild"]
+        .forEach((sel) => { $(sel).disabled = busy; });
+      $("#btn-save").disabled = busy || !state.dirty;
+      if (!busy) { resetBar(); status("Idle"); }
+    }
+
+    // -- fetch helpers ----------------------------------------------------
+
+    async function api(path, options) {
+      const response = await fetch(path, options);
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.detail || `${response.status} ${response.statusText}`);
+      }
+      return body;
+    }
+
+    async function postJSON(path, payload) {
+      return api(path, {
+        method: "POST",
+        headers: payload ? { "Content-Type": "application/json" } : undefined,
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+    }
+
+    /** Start a background job and poll it until it finishes. */
+    async function runJob(path, label) {
+      if (state.busy) return false;
+      setBusy(true);
+      status(label);
+      progress(0, 0);
+      let shown = 0;
+      try {
+        const { job_id } = await postJSON(path);
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 600));
+          const job = await api(`/api/jobs/${job_id}`);
+          job.logs.slice(shown).forEach((line) =>
+            log(line, line.startsWith("ERROR") ? "error" : null));
+          shown = job.logs.length;
+          if (job.total) {
+            progress(job.done, job.total);
+            status(`${label} ${job.done}/${job.total}`);
+          }
+          if (job.status === "error") throw new Error(job.error || "Job failed");
+          if (job.status === "done") return true;
+        }
+      } catch (err) {
+        log("ERROR: " + err.message, "error");
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    // -- renderers --------------------------------------------------------
+
+    function table(headers, rows) {
+      const wrap = document.createElement("div");
+      wrap.className = "table-scroll";
+      const t = document.createElement("table");
+      const thead = document.createElement("thead");
+      const hr = document.createElement("tr");
+      headers.forEach((h) => {
+        const th = document.createElement("th");
+        th.textContent = h;
+        hr.appendChild(th);
+      });
+      thead.appendChild(hr);
+      t.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      rows.forEach((cells) => {
+        const tr = document.createElement("tr");
+        cells.forEach((cell) => {
+          const td = document.createElement("td");
+          if (cell && cell.node) { td.appendChild(cell.node); td.className = cell.cls || ""; }
+          else { td.textContent = cell === null || cell === undefined ? "" : cell; }
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      t.appendChild(tbody);
+      wrap.appendChild(t);
+      return wrap;
+    }
+
+    const mmss = (secs) => {
+      const s = Math.round(secs || 0);
+      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    };
+
+    function tagList(values) {
+      const frag = document.createDocumentFragment();
+      (values || []).forEach((v) => {
+        const span = document.createElement("span");
+        span.className = "tag";
+        span.textContent = v;
+        frag.appendChild(span);
+      });
+      const holder = document.createElement("div");
+      holder.appendChild(frag);
+      return holder;
+    }
+
+    function energyMeter(value) {
+      const holder = document.createElement("div");
+      holder.textContent = value;
+      const meter = document.createElement("span");
+      meter.className = "energy";
+      const fill = document.createElement("i");
+      fill.style.width = Math.max(0, Math.min(100, value * 10)) + "%";
+      meter.appendChild(fill);
+      holder.appendChild(meter);
+      return holder;
+    }
+
+    async function loadLibrary() {
+      const data = await api("/api/library");
+      const host = $("#tab-library");
+      host.innerHTML = "";
+      if (!data.songs.length) {
+        host.innerHTML = '<div class="empty">No library yet — run <b>Export Library</b>.</div>';
+        return;
+      }
+      host.appendChild(table(
+        ["Title", "Artist", "Album", "Genre", "Year", "Plays", "Length"],
+        data.songs.map((s) => [
+          s.title, s.artist, s.album, s.genre,
+          { node: document.createTextNode(s.year), cls: "num" },
+          { node: document.createTextNode(s.play_count), cls: "num" },
+          { node: document.createTextNode(mmss(s.duration)), cls: "num" },
+        ])
+      ));
+    }
+
+    async function loadAnalysis() {
+      const data = await api("/api/analysis");
+      const host = $("#tab-analysis");
+      host.innerHTML = "";
+      if (!data.songs.length) {
+        host.innerHTML = '<div class="empty">No classifications yet — run <b>Analyze Songs</b>.</div>';
+        return;
+      }
+      host.appendChild(table(
+        ["Title", "Artist", "AI genre", "Energy", "Mood", "Contexts"],
+        data.songs.map((s) => [
+          s.title, s.artist, s.classification.genre,
+          { node: energyMeter(s.classification.energy) },
+          s.classification.mood,
+          { node: tagList(s.classification.contexts) },
+        ])
+      ));
+    }
+
+    function renderPlan() {
+      const host = $("#plan-body");
+      host.className = "";
+      host.innerHTML = "";
+      if (!state.plan || !state.plan.playlists.length) {
+        host.className = "empty";
+        host.innerHTML = "No plan yet — run <b>Preview Results</b>.";
+        return;
+      }
+
+      const grid = document.createElement("div");
+      grid.className = "cards";
+
+      state.plan.playlists.forEach((playlist, listIndex) => {
+        const card = document.createElement("div");
+        card.className = "card";
+
+        const heading = document.createElement("h3");
+        heading.textContent = playlist.name;
+        const count = document.createElement("span");
+        count.textContent = playlist.songs.length;
+        heading.appendChild(count);
+        card.appendChild(heading);
+
+        const list = document.createElement("ul");
+        if (!playlist.songs.length) {
+          const none = document.createElement("div");
+          none.className = "none";
+          none.textContent = "Empty — drop a song here.";
+          list.appendChild(none);
+        }
+        playlist.songs.forEach((song, songIndex) => {
+          const item = document.createElement("li");
+          item.draggable = true;
+          item.textContent = song.title;
+          const who = document.createElement("span");
+          who.className = "who";
+          who.textContent = song.artist;
+          item.appendChild(who);
+          item.addEventListener("dragstart", (event) => {
+            item.classList.add("dragging");
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain",
+              JSON.stringify({ from: listIndex, song: songIndex }));
+          });
+          item.addEventListener("dragend", () => item.classList.remove("dragging"));
+          list.appendChild(item);
+        });
+        card.appendChild(list);
+
+        card.addEventListener("dragover", (event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          card.classList.add("drop-target");
+        });
+        card.addEventListener("dragleave", () => card.classList.remove("drop-target"));
+        card.addEventListener("drop", (event) => {
+          event.preventDefault();
+          card.classList.remove("drop-target");
+          let payload;
+          try { payload = JSON.parse(event.dataTransfer.getData("text/plain")); }
+          catch { return; }
+          moveSong(payload.from, payload.song, listIndex);
+        });
+
+        grid.appendChild(card);
+      });
+
+      host.appendChild(grid);
+    }
+
+    function moveSong(fromList, songIndex, toList) {
+      if (fromList === toList) return;
+      const source = state.plan.playlists[fromList];
+      const target = state.plan.playlists[toList];
+      const [song] = source.songs.splice(songIndex, 1);
+      if (!song) return;
+
+      const duplicate = target.songs.some(
+        (s) => s.title.trim().toLowerCase() === song.title.trim().toLowerCase()
+            && s.artist.trim().toLowerCase() === song.artist.trim().toLowerCase()
+      );
+      if (duplicate) {
+        log(`"${song.title}" is already in ${target.name} — removed from ${source.name}.`);
+      } else {
+        target.songs.push(song);
+        log(`Moved "${song.title}" from ${source.name} to ${target.name}.`);
+      }
+      markDirty();
+      renderPlan();
+    }
+
+    function markDirty() {
+      state.dirty = true;
+      $("#btn-save").disabled = false;
+      status("Unsaved changes to the plan.");
+    }
+
+    async function loadPlan(rebuild) {
+      try {
+        state.plan = await api("/api/playlist-plan" + (rebuild ? "?rebuild=true" : ""));
+        state.dirty = false;
+        $("#btn-save").disabled = true;
+        renderPlan();
+        const placements = state.plan.playlists.reduce((n, p) => n + p.songs.length, 0);
+        log(`Plan: ${state.plan.playlists.length} playlists, ${placements} song placements.`);
+      } catch (err) {
+        log("ERROR: " + err.message, "error");
+      }
+    }
+
+    // -- wiring -----------------------------------------------------------
+
+    document.querySelectorAll("nav button").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll("nav button").forEach((other) =>
+          other.setAttribute("aria-selected", String(other === tab)));
+        ["library", "analysis", "plan"].forEach((name) => {
+          $("#tab-" + name).hidden = name !== tab.dataset.tab;
+        });
+      });
+    });
+
+    $("#btn-export").addEventListener("click", async () => {
+      if (await runJob("/api/export", "Exporting library...")) await loadLibrary();
+    });
+
+    $("#btn-analyze").addEventListener("click", async () => {
+      if (await runJob("/api/analyze", "Classifying")) {
+        await loadAnalysis();
+        await loadPlan(true);
+      }
+    });
+
+    $("#btn-preview").addEventListener("click", async () => {
+      await loadPlan(true);
+      document.querySelector('nav button[data-tab="plan"]').click();
+    });
+
+    $("#btn-rebuild").addEventListener("click", () => loadPlan(true));
+
+    $("#btn-save").addEventListener("click", async () => {
+      try {
+        const result = await postJSON("/api/playlist-plan", state.plan);
+        state.dirty = false;
+        $("#btn-save").disabled = true;
+        log(`Saved: ${result.playlists} playlists, ${result.placements} placements.`, "ok");
+        status("Plan saved.");
+      } catch (err) {
+        log("ERROR: " + err.message, "error");
+      }
+    });
+
+    $("#btn-create").addEventListener("click", async () => {
+      if (!state.plan || !state.plan.playlists.length) {
+        log("Nothing to create — run Preview Results first.", "error");
+        return;
+      }
+      if (state.dirty) {
+        log("Save your changes before creating playlists.", "error");
+        return;
+      }
+      const placements = state.plan.playlists.reduce((n, p) => n + p.songs.length, 0);
+      const ok = confirm(
+        `Create or update ${state.plan.playlists.length} playlists in Apple Music `
+        + `and add ${placements} songs?\n\nExisting playlists with these names are `
+        + `added to, not replaced.`
+      );
+      if (!ok) { log("Cancelled — nothing was written to Apple Music."); return; }
+      await runJob("/api/create-playlists", "Creating playlists...");
+    });
+
+    // -- boot -------------------------------------------------------------
+
+    (async function boot() {
+      log("Ready. Start with Export Library.");
+      await loadLibrary();
+      await loadAnalysis();
+      try {
+        const plan = await api("/api/playlist-plan");
+        if (plan.playlists.length) { state.plan = plan; renderPlan(); }
+      } catch { /* no saved plan yet -- expected on first run */ }
+    })();
+  </script>
 </body>
 </html>
