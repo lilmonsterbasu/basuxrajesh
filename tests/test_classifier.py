@@ -17,6 +17,7 @@ from classifier import (
     ClassificationCache,
     ClassificationError,
     ClassificationResult,
+    FatalClassificationError,
     BaseClassifier,
     get_classifier,
     load_classified_songs,
@@ -219,6 +220,64 @@ def test_truncated_response_raises(make_classifier, song):
     clf = make_classifier([_FakeResponse(_entry(0), stop_reason="max_tokens")])
     with pytest.raises(ClassificationError, match="max_tokens"):
         clf.classify(song)
+
+
+def _status_error(status: int, message: str):
+    http_response = httpx.Response(
+        status, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    )
+    return anthropic.APIStatusError(message, response=http_response, body=None)
+
+
+def test_billing_failure_aborts_instead_of_retrying_every_song(make_classifier, songs):
+    """An empty credit balance fails identically for every song.
+
+    Regression test for a real run that burned ~137 requests grinding through
+    a 130-song library one at a time against the same 400.
+    """
+    boom = [
+        _status_error(400, "Your credit balance is too low to access the Anthropic API.")
+        for _ in range(200)
+    ]
+    clf = make_classifier(boom, batch_size=20)
+
+    with pytest.raises(ClassificationError, match="credit balance"):
+        clf.classify_batch(songs)
+
+    # One batch attempt, then stop -- not one attempt per song.
+    assert len(clf._client.messages.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        (401, "invalid x-api-key"),
+        (403, "forbidden"),
+        (400, "Your credit balance is too low"),
+        (400, "billing issue detected"),
+    ],
+)
+def test_account_level_errors_are_fatal(make_classifier, song, status, message):
+    clf = make_classifier([_status_error(status, message)])
+    with pytest.raises(FatalClassificationError):
+        clf.classify(song)
+
+
+def test_transient_errors_still_fall_back_per_song(make_classifier, songs):
+    """A 500 is not an account problem -- the per-song retry must still happen."""
+    clf = make_classifier(
+        [
+            _status_error(500, "internal server error"),
+            _FakeResponse(_entry(0)),
+            _FakeResponse(_entry(0)),
+            _FakeResponse(_entry(0)),
+        ],
+        batch_size=3,
+    )
+    results = clf.classify_batch(songs[:3])
+
+    assert len(results) == 3
+    assert len(clf._client.messages.calls) == 4
 
 
 def test_api_status_error_is_wrapped(make_classifier, song):

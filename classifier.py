@@ -46,6 +46,37 @@ class ClassificationError(RuntimeError):
     """Raised when a provider response can't be turned into a result."""
 
 
+class FatalClassificationError(ClassificationError):
+    """An account-level problem that will fail identically for every song.
+
+    Expired keys, revoked permissions, and exhausted credit balances are not
+    per-song failures. Retrying a 2,000-song library one song at a time
+    against a "credit balance too low" error just makes the user wait for
+    2,000 identical rejections, so these abort the whole run immediately.
+    """
+
+
+#: Substrings that mark a provider error as account-level rather than per-song.
+_FATAL_HINTS = (
+    "credit balance",
+    "billing",
+    "quota",
+    "insufficient_quota",
+    "payment",
+    "suspended",
+    "invalid x-api-key",
+    "invalid api key",
+    "authentication",
+)
+
+
+def _is_fatal(message: str, status_code: int | None = None) -> bool:
+    if status_code in (401, 403):
+        return True
+    lowered = message.lower()
+    return any(hint in lowered for hint in _FATAL_HINTS)
+
+
 @dataclass
 class ClassificationResult:
     """Structured output of classifying one song."""
@@ -244,10 +275,17 @@ class BaseClassifier:
     # -- internals ----------------------------------------------------------
 
     def _classify_chunk(self, chunk: list[Song]) -> list[ClassificationResult]:
-        """Classify one chunk, falling back to single calls if the batch fails."""
+        """Classify one chunk, falling back to single calls if the batch fails.
+
+        FatalClassificationError is deliberately not caught here: an expired
+        key or an empty credit balance fails the same way for every song, so
+        the run should stop rather than retry the whole library one at a time.
+        """
         if len(chunk) > 1:
             try:
                 return self._collect(self._classify_songs(chunk), chunk)
+            except FatalClassificationError:
+                raise
             except ClassificationError as exc:
                 logger.warning(
                     "Batch of %d failed (%s); retrying song by song", len(chunk), exc
@@ -257,6 +295,8 @@ class BaseClassifier:
         for song in chunk:
             try:
                 result = self._normalize(self._classify_song(song), song)
+            except FatalClassificationError:
+                raise
             except Exception as exc:  # noqa: BLE001 -- one song must not kill the run
                 logger.warning("Skipping %s by %s: %s", song.title, song.artist, exc)
                 continue
@@ -435,9 +475,10 @@ class ClaudeClassifier(BaseClassifier):
                 messages=[{"role": "user", "content": prompt}],
             )
         except self._anthropic.APIStatusError as exc:
-            raise ClassificationError(
-                f"Claude API error ({exc.status_code}): {exc.message}"
-            ) from exc
+            message = f"Claude API error ({exc.status_code}): {exc.message}"
+            if _is_fatal(exc.message, exc.status_code):
+                raise FatalClassificationError(message) from exc
+            raise ClassificationError(message) from exc
         except self._anthropic.APIConnectionError as exc:
             raise ClassificationError(f"Could not reach the Claude API: {exc}") from exc
 
@@ -507,7 +548,10 @@ class OpenAIClassifier(BaseClassifier):
                 },
             )
         except Exception as exc:  # noqa: BLE001 -- SDK error types vary by version
-            raise ClassificationError(f"OpenAI API error: {exc}") from exc
+            message = f"OpenAI API error: {exc}"
+            if _is_fatal(str(exc), getattr(exc, "status_code", None)):
+                raise FatalClassificationError(message) from exc
+            raise ClassificationError(message) from exc
 
         choice = response.choices[0]
         if getattr(choice.message, "refusal", None):
