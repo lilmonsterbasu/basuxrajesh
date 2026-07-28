@@ -10,9 +10,9 @@
     "B": {
       "label": "AI Classification",
       "owner": "Rajesh",
-      "done": 6,
+      "done": 12,
       "total": 12,
-      "percent": 50
+      "percent": 100
     },
     "C": {
       "label": "Playlist Logic + Write-back",
@@ -29,5 +29,5 @@
       "percent": 100
     }
   },
-  "overall_percent": 77
+  "overall_percent": 100
 }
