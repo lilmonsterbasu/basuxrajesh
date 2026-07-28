@@ -117,6 +117,48 @@ def get_library() -> dict:
     return {"songs": [asdict(song) for song in songs], "exported": True}
 
 
+@api.get("/api/stats")
+def get_stats() -> dict:
+    """Headline numbers for the home page.
+
+    `exported` / `analyzed` are reported separately so the page can show a
+    "run Export Library first" state instead of fabricating counts, which the
+    design reference explicitly asks for.
+    """
+    stats = {
+        "songs": 0,
+        "artists": 0,
+        "playlists": 0,
+        "analyzed_songs": 0,
+        "exported": False,
+        "analyzed": False,
+    }
+
+    try:
+        songs = orchestrator.load_library_export(orchestrator.LIBRARY_EXPORT_PATH)
+    except FileNotFoundError:
+        songs = []
+    else:
+        stats["exported"] = True
+        stats["songs"] = len(songs)
+        stats["artists"] = len({song.artist.strip().lower() for song in songs})
+
+    try:
+        results = orchestrator.load_analysis()
+    except FileNotFoundError:
+        results = []
+    else:
+        stats["analyzed"] = True
+        stats["analyzed_songs"] = len(results)
+
+    try:
+        stats["playlists"] = len(orchestrator.load_playlist_plan())
+    except FileNotFoundError:
+        pass
+
+    return stats
+
+
 @api.post("/api/export")
 def export_library() -> dict:
     """Trigger orchestrator.run_export_library() as a background job."""
