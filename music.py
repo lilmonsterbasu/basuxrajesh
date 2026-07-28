@@ -16,6 +16,12 @@ import logging
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Avoids a circular import (classifier.py imports Song from this module):
+    # only needed for type checking, never evaluated at runtime.
+    from classifier import ClassificationResult
 
 logger = logging.getLogger(__name__)
 
@@ -177,55 +183,95 @@ def load_library_export(path: Path) -> list[Song]:
 
 
 def build_playlists(
-    classified_songs: list[dict],
+    classified_songs: list["ClassificationResult"],
 ) -> dict[str, list[Song]]:
     """Group classified songs into playlists by their assigned contexts.
 
-    Input: list of {"song": Song, "genre": str, "energy": int, "mood": str,
-                     "contexts": list[str]} (see classifier.ClassificationResult)
+    Each item in `classified_songs` is a classifier.ClassificationResult
+    (has .song and .contexts: list[str]). A song with
+    contexts=["Coding", "Late Night"] is placed into both the "Coding" and
+    "Late Night" playlist groups.
 
-    A song with contexts ["Coding", "Late Night"] must appear in both the
-    "Coding" and "Late Night" playlist groups.
-
-    TODO(Part C):
-    - Iterate classified_songs, for each context tag append the song to
-      that playlist's list
-    - De-duplicate within each playlist using Song.key()
-    - Return dict[playlist_name, list[Song]]
+    De-duplication is per-playlist (via Song.key()), so the same song can
+    legitimately appear in multiple playlists but never twice in the same
+    one.
     """
-    raise NotImplementedError("Part C: implement build_playlists()")
+    plan: dict[str, list[Song]] = {}
+    seen_keys: dict[str, set[tuple[str, str]]] = {}
+
+    for result in classified_songs:
+        song = result.song
+        for context in result.contexts:
+            if not context:
+                continue
+            plan.setdefault(context, [])
+            seen_keys.setdefault(context, set())
+            if song.key() not in seen_keys[context]:
+                seen_keys[context].add(song.key())
+                plan[context].append(song)
+
+    logger.info(
+        "build_playlists: %d classified songs -> %d playlists",
+        len(classified_songs),
+        len(plan),
+    )
+    return plan
 
 
 def create_playlist_if_missing(name: str) -> str:
     """Create a playlist in Apple Music if it doesn't already exist.
 
     Returns "created" or "skipped".
-
-    TODO(Part C): call _run_applescript("create_playlist.scpt", name)
     """
-    raise NotImplementedError("Part C: implement create_playlist_if_missing()")
+    result = _run_applescript("create_playlist.scpt", name)
+    logger.info("create_playlist_if_missing(%r) -> %s", name, result)
+    return result
 
 
 def add_song_to_playlist(playlist_name: str, song: Song) -> str:
     """Add a single song to a playlist, avoiding duplicates.
 
-    Returns "added", "duplicate", or "not_found".
-
-    TODO(Part C): call _run_applescript(
+    Returns "added", "duplicate", "not_found" (song not in the library),
+    or "playlist_not_found".
+    """
+    result = _run_applescript(
         "add_song_to_playlist.scpt", playlist_name, song.title, song.artist
     )
-    """
-    raise NotImplementedError("Part C: implement add_song_to_playlist()")
+    if result == "not_found":
+        logger.warning(
+            "Song not found in library, skipped: %r by %r (playlist %r)",
+            song.title,
+            song.artist,
+            playlist_name,
+        )
+    elif result == "playlist_not_found":
+        logger.warning("Playlist not found when adding song: %r", playlist_name)
+    return result
 
 
 def sync_playlists_to_music(plan: dict[str, list[Song]]) -> None:
     """Given a full playlist plan, create missing playlists and populate them.
 
-    TODO(Part C):
-    - For each (playlist_name, songs) in plan.items():
-        - create_playlist_if_missing(playlist_name)
-        - for song in songs: add_song_to_playlist(playlist_name, song)
-    - Log progress (created/skipped/added/duplicate counts) for the GUI
-      console output to display.
+    Logs a summary of created/skipped playlists and
+    added/duplicate/not_found songs, which the GUI console output can
+    surface to the user.
     """
-    raise NotImplementedError("Part C: implement sync_playlists_to_music()")
+    counts = {"created": 0, "skipped": 0, "added": 0, "duplicate": 0, "not_found": 0}
+
+    for playlist_name, songs in plan.items():
+        playlist_status = create_playlist_if_missing(playlist_name)
+        counts[playlist_status] = counts.get(playlist_status, 0) + 1
+
+        for song in songs:
+            song_status = add_song_to_playlist(playlist_name, song)
+            counts[song_status] = counts.get(song_status, 0) + 1
+
+    logger.info(
+        "sync_playlists_to_music done: %d playlists created, %d skipped, "
+        "%d songs added, %d duplicates skipped, %d not found",
+        counts["created"],
+        counts["skipped"],
+        counts["added"],
+        counts["duplicate"],
+        counts["not_found"],
+    )
